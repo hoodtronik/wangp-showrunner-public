@@ -5,8 +5,8 @@ A modified copy of the **Showrunner** plugin bundled with [WanGP](https://github
 not widely. Offered as ideas for upstream; take what is useful.
 
 **Modified by hoodtronik, 2026-11-01** (WanGP Community License 2.0, section 4.1(d)). Every changed spot is marked
-`hoodtronik fork` in the code. The upstream baseline is the `upstream` branch (`UPSTREAM_WANGP_COMMIT` = the WanGP commit it came
-from); `main` = upstream + the patches below. License: [LICENSE.txt](LICENSE.txt) (WanGP Community License 2.0, free use only).
+`hoodtronik fork` in the code. Based on the Showrunner in WanGP commit `UPSTREAM_WANGP_COMMIT`; diff `showrunner/` against
+that commit's `plugins/showrunner` to see every change. License: [LICENSE.txt](LICENSE.txt) (WanGP Community License 2.0, free use only).
 
 ## Install
 Copy `showrunner/` over `WanGP/plugins/showrunner` (back the original up first), then restart WanGP.
