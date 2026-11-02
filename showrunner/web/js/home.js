@@ -1,7 +1,7 @@
 // Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 // Home: start a production from its kind, or open one.
 import { api } from './api.js';
-import { icon, esc, art, ago, formatDuration, menu, confirmDialog, promptDialog, toast } from './ui.js';
+import { icon, esc, art, ago, formatDuration, menu, confirmDialog, promptDialog, toast, adviceBar, bindAdvice } from './ui.js';
 
 export const KINDS = {
   music_video: { label: 'Music video', icon: 'music', text: 'Cut to the beat of your song', hue: 'music' },
@@ -19,7 +19,9 @@ export function kindTiles(selected = null) {
 }
 
 export function renderHome(container, state, { open }) {
-  const productions = state.catalog.filter(item => !item.archived), archived = state.catalog.filter(item => item.archived);
+  // hoodtronik fork: a movie's scenes live on its Scenes page, not here (the catalog clears `movie` when that movie is gone)
+  const top = state.catalog.filter(item => !item.movie);
+  const productions = top.filter(item => !item.archived), archived = top.filter(item => item.archived);
   const reason = state.directorInfo?.available ? '' : state.directorInfo?.reason;
   container.innerHTML = `<div class="home">
     <div class="hero">
@@ -27,12 +29,14 @@ export function renderHome(container, state, { open }) {
       <p>Pick a format. You write the brief, Deepy directs: it plans every shot, casts, shoots and edits, and you review and change anything on the storyboard and the timeline.</p></div>
       ${reason ? `<div class="banner" style="margin:0;max-width:420px">${icon('alert')}<span>${esc(reason)}</span></div>` : ''}
     </div>
+    ${adviceBar(state.directorInfo)}
     <div class="kinds">${kindTiles()}</div>
     <div class="section-title">${icon('layers')} Your productions <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:500">${productions.length || ''}</span></div>
     ${productions.length ? `<div class="productions">${productions.map(card).join('')}</div>` : `<div class="empty-state">${archived.length ? 'Every production is archived: open the list below to bring one back.' : 'No production yet. Choose a format above to start.'}</div>`}
     ${archived.length ? `<details class="archived-productions" ${state.archivedOpen ? 'open' : ''}><summary class="section-title">${icon('chevron', 'chev')} Archived <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:500">${archived.length}</span></summary>
       <div class="productions">${archived.map(card).join('')}</div></details>` : ''}
   </div>`;
+  bindAdvice(container, state.directorInfo);
   const folded = container.querySelector('.archived-productions');
   if (folded) folded.ontoggle = () => state.archivedOpen = folded.open;  // stays open when the list refreshes
   const archive = async (id, archived) => {
@@ -46,7 +50,7 @@ export function renderHome(container, state, { open }) {
   };
   container.querySelectorAll('[data-kind]').forEach(button => button.onclick = async () => {
     const title = await promptDialog({ title: `New ${KINDS[button.dataset.kind].label.toLowerCase()}`, text: 'Its name (you can change it later, at the top of the page).',
-      value: `New ${KINDS[button.dataset.kind].label.toLowerCase()}`, ok: 'Create' });
+      placeholder: `New ${KINDS[button.dataset.kind].label.toLowerCase()}`, ok: 'Create' });
     if (title === null) return;  // a look at the formats creates nothing
     button.disabled = true;
     try {
@@ -83,8 +87,8 @@ export function renderHome(container, state, { open }) {
 
 function card(item) {
   const kind = KINDS[item.kind] || KINDS.free;
-  const posters = item.posters || [];
-  const cover = posters.length ? posters.slice(0, posters.length >= 4 ? 4 : 1).map(path => `<img loading="lazy" src="api/productions/${encodeURIComponent(item.id)}/file?path=${encodeURIComponent(path)}" alt="">`).join('')
+  const posters = [...(item.posters || []).map(path => ({ id: item.id, path })), ...(item.scene_posters || [])];  // a movie: its scenes' posters
+  const cover = posters.length ? posters.slice(0, posters.length >= 4 ? 4 : 1).map(poster => `<img loading="lazy" src="api/productions/${encodeURIComponent(poster.id)}/file?path=${encodeURIComponent(poster.path)}" alt="">`).join('')
     : `<div class="placeholder" style="${art(item.id, kind.hue)}">${icon(kind.icon)}</div>`;
   const progress = item.shots ? Math.round(100 * (item.approved || 0) / item.shots) : 0;
   return `<article class="prod-card" data-id="${esc(item.id)}">
@@ -92,7 +96,7 @@ function card(item) {
       <div class="card-actions"><button class="btn small icon" data-archive title="${item.archived ? 'Bring back from the archive' : 'Archive: hide it from this page, keep everything'}">${icon(item.archived ? 'undo' : 'archive')}</button>
         <button class="btn small icon" data-trash title="Delete">${icon('trash')}</button><button class="btn small icon menu-btn" title="More">${icon('more')}</button></div></div>
     <div class="prod-body"><b>${esc(item.title)}</b>
-      <div class="prod-meta">${icon(kind.icon)}<span>${kind.label}</span><span>·</span>${icon('clock')}<span>${formatDuration(item.duration_s)}</span><span>·</span><span>${item.shots} shots</span>${item.director === 'paused' ? `<span class="tag" style="margin-left:auto">${icon('pause')}Paused</span>` : item.director !== 'idle' ? `<span class="tag rendering" style="margin-left:auto">${icon('director')}Working</span>` : ''}</div>
+      <div class="prod-meta">${item.is_movie ? `${icon('film')}<span>Movie · ${item.scenes || 0} ${item.scenes === 1 ? 'scene' : 'scenes'}</span>` : `${icon(kind.icon)}<span>${kind.label}</span>`}<span>·</span>${icon('clock')}<span>${formatDuration(item.duration_s)}</span><span>·</span><span>${item.shots} shots</span>${item.director === 'paused' ? `<span class="tag" style="margin-left:auto">${icon('pause')}Paused</span>` : item.director !== 'idle' ? `<span class="tag rendering" style="margin-left:auto">${icon('director')}Working</span>` : ''}</div>
       <div class="progress" title="${item.approved || 0} of ${item.shots} shots approved"><i style="width:${progress}%"></i></div>
       <div class="prod-meta"><span>${item.approved || 0}/${item.shots} approved</span><span style="margin-left:auto">${ago(item.updated)}</span></div>
     </div></article>`;

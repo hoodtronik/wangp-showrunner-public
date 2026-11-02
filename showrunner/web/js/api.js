@@ -36,6 +36,7 @@ export const api = {
   waveform: (id, path) => call('GET', `productions/${id}/waveform?path=${encodeURIComponent(path)}`),
   subtitles: (id, path) => call('GET', `productions/${id}/subtitles?path=${encodeURIComponent(path)}`),
   rates: id => call('GET', `productions/${id}/rates`),
+  sizes: id => call('GET', `productions/${id}/sizes`),
   director: id => call('GET', `productions/${id}/director`),
   direct: (id, task, message = '', shots = []) => call('POST', `productions/${id}/director`, { task, message, shots }),
   steer: (id, text) => call('POST', `productions/${id}/director/steer`, { text }),
@@ -44,6 +45,7 @@ export const api = {
   resume: (id, message = '') => call('POST', `productions/${id}/director/resume`, { message }),
   rerun: (id, shot) => call('POST', `productions/${id}/shots/${shot}/rerun`),
   finish: (id, shot) => call('POST', `productions/${id}/shots/${shot}/finish`),
+  detachSound: (id, shot) => call('POST', `productions/${id}/shots/${shot}/detach-sound`),
   cancelRender: (id, shot) => call('POST', `productions/${id}/shots/${shot}/cancel`),
   assemble: id => call('POST', `productions/${id}/assemble`),
   templates: id => call('GET', `productions/${id}/templates`),
@@ -51,6 +53,10 @@ export const api = {
   defaultTemplates: () => call('GET', 'templates'),
   chooseDefaultTemplate: (role, template) => call('POST', 'templates', { role, template }),
   guide: () => call('GET', 'guide'),
+  settings: () => call('GET', 'settings'),
+  conversation: (id, after) => call('GET', `productions/${id}/conversation?after=${after}`),
+  saveSettings: settings => call('POST', 'settings', settings),
+  castLoras: id => call('GET', `productions/${id}/loras`),
   addText: (id, text) => call('POST', `productions/${id}/text`, text),
   changeText: (id, overlay, fields) => call('POST', `productions/${id}/text/${overlay}`, { fields }),
   card: (id, shot, text) => call('POST', `productions/${id}/shots/${shot}/card`, text),
@@ -61,6 +67,17 @@ export const api = {
     if (target) form.append('target', target);
     return call('POST', `productions/${id}/upload`, form);
   },
+  // hoodtronik fork: movies and their scenes (movies.py)
+  recipes: () => call('GET', 'recipes'),
+  saveRecipe: recipe => call('POST', 'recipes', recipe),
+  deleteRecipe: name => call('DELETE', `recipes/${encodeURIComponent(name)}`),
+  makeMovie: (id, is_movie = true) => call('POST', `productions/${id}/movie`, { is_movie }),
+  scenes: id => call('GET', `productions/${id}/scenes`),
+  createScene: (id, scene) => call('POST', `productions/${id}/scenes`, scene),
+  sceneOrder: (id, order) => call('POST', `productions/${id}/scene_order`, { order }),
+  uses: (id, uses) => call('POST', `productions/${id}/uses`, uses),
+  fileUnder: (id, movie, archived = null) => call('POST', `productions/${id}/file_under`, { movie, archived }),
+  assembleMovie: id => call('POST', `productions/${id}/assemble_movie`),
   file: (id, path, download = false) => path ? `api/productions/${id}/file?path=${encodeURIComponent(path)}${download ? '&download=true' : ''}` : '',
 };
 

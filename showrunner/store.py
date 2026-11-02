@@ -26,7 +26,14 @@ def _slug(text: str) -> str:
 def _write_json(path: Path, payload: Any) -> None:
     temporary = path.with_name(path.name + ".tmp")
     temporary.write_text(json.dumps(payload, indent=1, ensure_ascii=False), encoding="utf-8")
-    os.replace(temporary, path)
+    for attempt in range(40):  # Windows refuses to replace a file another process has open, for as long as it reads it: an antivirus, a search index, a backup
+        try:
+            os.replace(temporary, path)
+            return
+        except PermissionError:
+            if attempt == 39:
+                raise
+            time.sleep(0.05)
 
 
 def _media_settings(settings: dict[str, Any], convert: Callable[[str], str]) -> dict[str, Any]:
@@ -85,7 +92,19 @@ class Production:
             self.save()
             revision = self.doc["revision"]
         self.store.publish({"type": "doc", "production": self.id, "revision": revision, "by": by, "ops": [op.get("op") for op in ops]})
+        self._sync_movie(by)
         return results
+
+    def _sync_movie(self, by: str) -> None:
+        """hoodtronik fork (movies.py): a movie's change reaches its scenes; a scene's change to the shared library reaches its movie."""
+        from . import movies
+        try:
+            if self.doc.get("is_movie"):
+                movies.materialize_all(self.store, self.id)
+            elif self.doc.get("movie") and self.doc.get("uses") is not None:
+                movies.push(self.store, self, by)
+        except Exception as error:  # the change itself is saved; the sync is retried by the next change
+            print(f"[Showrunner] Movie sync of {self.id} failed: {error}")
 
     def save(self) -> None:
         with self.lock:
@@ -281,10 +300,26 @@ class ProductionStore:
                 items.append({"id": production_id, "title": production_id, "error": str(error)})
                 continue
             posters = [take["poster"] for shot in doc["shots"] if (take := model.chosen_take(shot)) and take.get("poster")][:4]
-            items.append({"id": production_id, "title": doc["title"], "kind": doc["brief"]["kind"], "stage": doc["stage"], "updated": doc["updated"],
+            items.append({"is_movie": doc.get("is_movie", False), "movie": doc.get("movie"), "uses": doc.get("uses"), "recipe": doc.get("recipe"),
+                          "id": production_id, "title": doc["title"], "kind": doc["brief"]["kind"], "stage": doc["stage"], "updated": doc["updated"],
                           "created": doc["created"], "shots": len(doc["shots"]), "approved": sum(shot["status"] == "approved" for shot in doc["shots"]),
-                          "rendered": sum(bool(shot["takes"]) for shot in doc["shots"]), "duration_s": round(sum(item["duration_s"] for item in model.timeline(doc)), 1),
+                          "rendered": sum(bool(shot["takes"]) for shot in doc["shots"]), "duration_s": model.cut_length(doc),
                           "aspect": doc["brief"]["aspect"], "posters": posters, "director": doc["director"].get("state", "idle"), "archived": doc["archived"],
                           "deliverables": len(doc["deliverables"]), "latest": (doc["deliverables"] or [{}])[-1].get("path"),
                           "changed_since_delivery": bool(doc["deliverables"]) and doc["deliverables"][-1].get("edit_key") not in (None, model.edit_key(doc))})  # exports made before edit keys: unknown
+        movies = {item["id"]: item for item in items if item.get("is_movie")}
+        for item in items:  # a movie's card: its scenes' count, length and posters
+            if item.get("movie") in movies and item["id"] != item["movie"]:
+                movie = movies[item["movie"]]
+                movie.setdefault("scenes", 0)
+                movie.setdefault("scene_posters", [])
+                if not item.get("archived"):
+                    movie["scenes"] += 1
+                    movie["shots"] += item["shots"]
+                    movie["approved"] += item["approved"]
+                    movie["duration_s"] = round(movie["duration_s"] + item["duration_s"], 1)
+                    if item["posters"] and len(movie["scene_posters"]) < 4:
+                        movie["scene_posters"].append({"id": item["id"], "path": item["posters"][0]})
+            elif item.get("movie"):
+                item["movie"] = None  # its movie is gone: it shows on its own
         return items

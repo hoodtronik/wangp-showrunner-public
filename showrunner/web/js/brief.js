@@ -2,13 +2,20 @@
 // Brief: what to make, from which material, in which format and style. Every change saves itself.
 import { state, actions } from './app.js';
 import { api } from './api.js';
-import { icon, esc, fieldSaver, drawWave, formatTime, formatDuration, sectionColor, pickFiles, toast, confirmDialog, promptDialog } from './ui.js';
+import { icon, esc, h, fieldSaver, drawWave, formatTime, formatDuration, sectionColor, pickFiles, toast, confirmDialog, promptDialog, availability, AUDIO_ACCEPT, personFields } from './ui.js';
 import { kindTiles, KINDS } from './home.js';
 import { modelRows, openDefaultModels } from './models.js';
 
 const STYLES = ['Cinematic', 'Anime', 'Documentary', 'Noir', 'Neon', 'Pastel', 'Claymation', 'Watercolor', 'Vintage film', 'VHS', 'Epic', 'Minimal', 'Dreamy', 'Gritty', 'Surreal', 'Cyberpunk'];
 const ASPECT_FRAMES = { '16:9': [44, 25], '9:16': [20, 34], '1:1': [30, 30], '4:3': [38, 28], '2.39:1': [50, 21] };
 const PACING = ['Very calm', 'Calm', 'Balanced', 'Energetic', 'Frenetic'];
+
+// A format chosen after shooting changes nothing by itself: the note says so, with the button that does it.
+function formatNote(doc) {
+  const latest = doc.deliverables.at(-1), [width, height] = doc.brief.aspect.split(':').map(Number);
+  if (!latest?.width || Math.abs(latest.width / latest.height - width / height) < 0.08) return '';
+  return `<div class="stale-note" style="margin-top:8px">${icon('alert')}<span class="grow">Your last version is ${latest.width}×${latest.height}: this choice changes nothing until the shots are made again in ${esc(doc.brief.aspect)}.</span><button class="btn small" id="make-format" ${availability(actions.directorBlocked())}>Make a ${esc(doc.brief.aspect)} version</button></div>`;
+}
 
 export function mountBrief(container, doc) {
   container.innerHTML = '<div class="brief" id="brief"></div>';
@@ -35,7 +42,7 @@ export function mountBrief(container, doc) {
         </div></section>
 
       <section class="panel"><div class="panel-head"><span class="num">3</span><h3>${brief.kind === 'music_video' ? 'The song' : 'Soundtrack'}</h3><span class="hint">${brief.kind === 'music_video' ? 'Drives timing, cuts and lip sync' : 'Optional: music the edit follows'}</span></div>
-        <div id="song">${brief.song ? songCard(doc, analysis) : dropzone('song', 'audio/*,video/*', 'Drop the song here', `or click to choose a file · WAV, MP3, FLAC, M4A, or a video to take its audio${brief.kind === 'music_video' ? '. No song yet? Leave this empty: the showrunner composes one from your idea and lyrics.' : ''}`)}</div></section>
+        <div id="song">${brief.song ? songCard(doc, analysis) : dropzone('song', AUDIO_ACCEPT + ',video/*', 'Drop the song here', `or click to choose a file · WAV, MP3, FLAC, M4A, or a video to take its audio${brief.kind === 'music_video' ? '. No song yet? Leave this empty: the showrunner composes one from your idea and lyrics.' : ''}`)}</div></section>
 
       <section class="panel"><div class="panel-head"><span class="num">4</span><h3>References</h3><span class="hint">Looks, places, moods, motion: images or videos</span></div>
         <div class="refs">${brief.references.map((path, index) => reference(path, index)).join('')}
@@ -53,7 +60,7 @@ export function mountBrief(container, doc) {
       <section class="panel"><div class="panel-head"><span class="num">7</span><h3>Look and format</h3></div>
         <div class="col" style="gap:18px">
           <div class="field"><div class="label">${icon('ratio')} Aspect ratio</div><div class="aspects">${Object.entries(ASPECT_FRAMES).map(([aspect, [width, height]]) =>
-            `<button class="aspect ${brief.aspect === aspect ? 'on' : ''}" data-aspect="${aspect}"><i style="width:${width}px;height:${height}px"></i>${aspect}<span class="muted" style="font-size:10.5px">${{ '16:9': 'Widescreen', '9:16': 'Vertical', '1:1': 'Square', '4:3': 'Classic', '2.39:1': 'Scope' }[aspect]}</span></button>`).join('')}</div></div>
+            `<button class="aspect ${brief.aspect === aspect ? 'on' : ''}" data-aspect="${aspect}"><i style="width:${width}px;height:${height}px"></i>${aspect}<span class="muted" style="font-size:10.5px">${{ '16:9': 'Widescreen', '9:16': 'Vertical', '1:1': 'Square', '4:3': 'Classic', '2.39:1': 'Scope' }[aspect]}</span></button>`).join('')}</div>${formatNote(state.doc)}</div>
           <div class="three">
             <div class="field"><div class="label">${icon('image')} Resolution</div><div class="seg" id="res">${['480p', '720p', '1080p'].map(value => `<button class="${brief.resolution === value ? 'on' : ''}" data-res="${value}">${value}</button>`).join('')}</div></div>
             <div class="field"><div class="label">${icon('clock')} Duration ${brief.song && analysis ? `<button class="chip clickable ${!brief.duration_s ? 'on' : ''}" id="match-song" style="height:20px;margin-left:4px">${icon('music')}Match the song</button>` : ''}</div>
@@ -79,12 +86,13 @@ export function mountBrief(container, doc) {
         <span class="hint" id="models-hint">Auto: the showrunner picks the best model for each shot</span><span class="fold">${icon(modelsOpen() ? 'chevronDown' : 'chevron')}</span></div>
         <div class="models" id="models" ${modelsOpen() ? '' : 'hidden'}><div class="muted">Loading the models…</div></div></section>
 
+      ${state.doc.deliverables.length ? `<div class="muted" style="font-size:12.5px;margin:4px 2px 0">This brief is where the production started: later changes live in the shots, the cast and the edit, and it is not rewritten. To keep going from where the production is, talk to the showrunner.</div>` : ''}
       <div class="cta-bar">
         <div class="grow"><b>${esc(kind.label)}</b> <span class="muted">· ${esc(brief.aspect)} · ${brief.resolution} · <span id="brief-duration">${formatDuration(brief.duration_s || analysis?.duration_s || 30)}</span> · ${doc.cast.length} cast · ${brief.references.length} ${brief.references.length === 1 ? 'reference' : 'references'}</span>
           ${state.directorInfo.available === false && state.directorInfo.reason ? `<div class="muted" style="font-size:12px;color:var(--amber)">${esc(state.directorInfo.reason)}</div>` : ''}</div>
         ${doc.shots.length ? `<button class="btn" id="to-board">${icon('grid')} Storyboard (${doc.shots.length})</button>` : ''}
         ${!(brief.text || '').trim() && !(brief.script || '').trim() && !brief.song ? '<span class="muted" style="font-size:12.5px">Write your idea first</span>' : ''}
-        <button class="btn primary lg" id="plan" ${actions.busy(doc) || state.live.running || !(brief.text || '').trim() && !(brief.script || '').trim() && !brief.song ? 'disabled' : ''}>${icon('wand')} ${actions.busy(doc) || state.live.running ? 'The showrunner is working…' : doc.shots.length ? 'Plan again' : 'Plan with the showrunner'}</button>
+        <button class="btn primary lg" id="plan" ${availability(actions.directorBlocked() || actions.planBlocked(doc))}>${icon('wand')} ${actions.busy(doc) || state.live.running ? 'The showrunner is working…' : doc.shots.length ? 'Plan again' : 'Plan with the showrunner'}</button>
       </div>`;
     bind();
     renderModels();
@@ -100,13 +108,16 @@ export function mountBrief(container, doc) {
     const ready = () => {  // the Plan button follows the idea as it is typed
       const filled = root.querySelector('#text').value.trim() || root.querySelector('#script')?.value.trim() || state.doc.brief.song;
       const button = root.querySelector('#plan');
-      button.disabled = !filled || actions.busy(state.doc) || state.live.running;
+      const blocked = actions.directorBlocked() || (filled ? '' : actions.planBlocked({ brief: {} }));
+      button.disabled = !!blocked;
+      button.title = blocked;
       button.previousElementSibling?.classList.contains('muted') && (button.previousElementSibling.style.display = filled ? 'none' : '');
     };
     root.querySelector('#text').oninput = event => { queue({ text: event.target.value }); ready(); };
     root.querySelector('#script')?.addEventListener('input', event => { queue({ script: event.target.value }); ready(); });
     root.querySelector('#style').oninput = event => queue({ style: event.target.value });
     root.querySelectorAll('[data-aspect]').forEach(button => button.onclick = () => actions.ops([{ op: 'brief', fields: { aspect: button.dataset.aspect } }]).then(render));
+    root.querySelector('#make-format')?.addEventListener('click', () => actions.makeFormat(state.doc.brief.aspect));
     root.querySelectorAll('[data-res]').forEach(button => button.onclick = () => actions.ops([{ op: 'brief', fields: { resolution: button.dataset.res } }]).then(render));
     root.querySelectorAll('[data-style]').forEach(button => button.onclick = () => {
       const tags = new Set(save.pending('brief')?.style_tags ?? state.doc.brief.style_tags);  // the chips clicked a moment ago count too
@@ -147,6 +158,16 @@ export function mountBrief(container, doc) {
     root.querySelectorAll('[data-set-name]').forEach(input => input.onchange = () => { const list = places(); list[+input.dataset.setName].name = input.value.trim() || list[+input.dataset.setName].name; savePlaces(list); });
     root.querySelectorAll('[data-set-lips]').forEach(toggle => toggle.onclick = () => { const list = places(); list[+toggle.dataset.setLips].lip_sync = !list[+toggle.dataset.setLips].lip_sync; savePlaces(list); });
     root.querySelectorAll('[data-set-remove]').forEach(button => button.onclick = () => { const list = places(); list.splice(+button.dataset.setRemove, 1); savePlaces(list); });
+    // NOTE (hoodtronik fork, 2026-11-02, request: "the environment images need to do the same" as the cast pictures): a set picture opens
+    // full screen, uncropped, like the cast hero picture (cast.js); click or Escape closes it. The remove button keeps its own click.
+    root.querySelectorAll('.sets-panel .ref img').forEach(img => img.onclick = () => {
+      const back = h(`<div class="modal-back"><img src="${img.src}" alt="" style="max-width:calc(100% - 48px);max-height:calc(100% - 48px);border-radius:12px;box-shadow:var(--shadow-lg);cursor:zoom-out"></div>`);
+      const close = () => { back.remove(); document.removeEventListener('keydown', keys); };
+      const keys = key => { if (key.key === 'Escape') { key.stopPropagation(); close(); } };
+      back.onclick = close;
+      document.addEventListener('keydown', keys);
+      document.getElementById('overlay-root').append(back);
+    });
     root.querySelectorAll('[data-set-pic]').forEach(button => button.onclick = () => { const [set, picture] = button.dataset.setPic.split(':').map(Number); const list = places(); list[set].references.splice(picture, 1); savePlaces(list); });
     root.querySelectorAll('[data-set-scene]').forEach(chip => chip.onclick = () => {
       const list = places(), place = list[+chip.dataset.setScene], scene = chip.dataset.scene;
@@ -195,7 +216,7 @@ export function mountBrief(container, doc) {
   function modelsOpen() { try { return localStorage.getItem('sr.models') === '1'; } catch { return false; } }
 
   function dropTarget(zone, role) {
-    const accept = role === 'song' ? 'audio/*,video/*' : 'image/*,video/*';
+    const accept = role === 'song' ? AUDIO_ACCEPT + ',video/*' : 'image/*,video/*';
     zone.onclick = async () => {
       if (role === 'location') {  // hoodtronik fork: a set is named first, its pictures are dropped on its card
         const name = await promptDialog({ title: 'Which place?', text: 'Use the same name as the script or the scene (THE NEST, HALL…).', placeholder: 'The Nest', ok: 'Add' });
@@ -204,7 +225,7 @@ export function mountBrief(container, doc) {
       }
       if (role === 'cast') {  // as on the Cast page: a person is named first; dropping photos adds people too
         const name = await promptDialog({ title: 'Who or what is it?', text: 'Describe them on the Cast page, or drop a photo here.', placeholder: 'Mia, the lead singer', ok: 'Add' });
-        if (name?.trim()) actions.ops([{ op: 'add_cast', fields: { name: name.trim() } }]).then(render);
+        if (name?.trim()) actions.ops([{ op: 'add_cast', fields: personFields(name) }]).then(render);
         return;
       }
       const files = await pickFiles(accept, role !== 'song');

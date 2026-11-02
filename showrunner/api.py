@@ -16,10 +16,12 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from . import production as model, titles
+from . import movies, production as model, titles
 
 WEB = Path(__file__).with_name("web")
 GUIDE = Path(__file__).resolve().parents[2] / "docs" / "SHOWRUNNER.md"
+GALLERY = Path(__file__).resolve().parents[2] / "shared" / "gradio"
+GALLERY_ZOOM = ("image_zoom.js", "image_zoom.css")  # the zoom of WanGP's image gallery, for the page's own image previews
 ASSET = re.compile(r"(?:js|css)/[\w.-]+\.(?:js|css)|icons/[\w.-]+\.svg|[\w.-]+\.(?:svg|png|webmanifest)")
 
 
@@ -47,6 +49,48 @@ class TemplatePick(BaseModel):
 
 class Archived(BaseModel):
     archived: bool = True
+
+
+class MovieFlag(BaseModel):
+    is_movie: bool = True
+
+
+class SceneCreated(BaseModel):
+    title: str = Field(default="New scene", max_length=200)
+    recipe: str | None = None
+    kind: str | None = None  # the format tile (Music video, Short film...); None = the recipe's, else the movie's
+    concept: str = Field(default="", max_length=20000)
+    uses: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class Uses(BaseModel):
+    cast: list[str] = Field(default_factory=list)
+    locations: list[str] = Field(default_factory=list)
+
+
+class SceneOrder(BaseModel):
+    order: list[str]
+
+
+class FiledUnder(BaseModel):
+    movie: str | None = None
+    archived: bool | None = None
+
+
+class Recipe(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=2000)
+    notes: str = Field(default="", max_length=20000)
+    fields: dict[str, Any] = Field(default_factory=dict)
+    from_scene: str | None = None
+
+
+class Settings(BaseModel):
+    notify_turns: bool | None = None
+    cast_loras: bool | None = None
+    show_all_errors: bool | None = None
+    show_deepy_tab: bool | None = None
+    any_shot_length: bool | None = None
 
 
 class Text(BaseModel):
@@ -112,6 +156,8 @@ def create_app(showrunner, *, title: str = "Showrunner") -> FastAPI:
 
     @app.get("/assets/{name:path}")
     def asset(name: str):
+        if name in GALLERY_ZOOM:
+            return FileResponse(GALLERY / name, headers={"Cache-Control": "no-cache"})
         if not ASSET.fullmatch(name) or not (WEB / name).is_file():
             raise HTTPException(404)
         return FileResponse(WEB / name, headers={"Cache-Control": "no-cache"})
@@ -136,6 +182,15 @@ def create_app(showrunner, *, title: str = "Showrunner") -> FastAPI:
     @app.post("/api/templates")
     def choose_default_template(request: TemplatePick):
         return showrunner.choose_default_template(request.role, request.template or None)
+
+    @app.get("/api/settings")
+    def settings():
+        return showrunner.host.settings()
+
+    @app.post("/api/settings")
+    def save_settings(request: Settings):
+        showrunner.host.save_settings(**request.model_dump(exclude_none=True))
+        return showrunner.host.settings()
 
     @app.post("/api/productions")
     def create(request: Created):
@@ -200,6 +255,72 @@ def create_app(showrunner, *, title: str = "Showrunner") -> FastAPI:
         store.trash(production_id)
         return {"trashed": production_id}
 
+    # Movies (hoodtronik fork, movies.py): a movie's shared library and its scenes -------------------------------------------------------
+    @app.get("/api/recipes")
+    def list_recipes():
+        return {"recipes": movies.recipes(store.root)}
+
+    @app.post("/api/recipes")
+    def save_recipe(request: Recipe):
+        fields = movies.recipe_of(production(request.from_scene).snapshot()) if request.from_scene else request.fields
+        return movies.save_recipe(store.root, request.name, fields, request.notes, request.description)
+
+    @app.delete("/api/recipes/{name}")
+    def delete_recipe(name: str):
+        movies.delete_recipe(store.root, name)
+        return {"deleted": name}
+
+    @app.post("/api/productions/{production_id}/movie")
+    def make_movie(production_id: str, request: MovieFlag):
+        target = production(production_id)
+        with target.lock:
+            target.doc["is_movie"] = request.is_movie
+            target.doc["revision"] += 1  # the open page reloads the document on a newer revision
+            target.save()
+        store.publish({"type": "doc", "production": production_id, "revision": target.doc["revision"], "by": "user", "ops": ["movie"]})
+        store.publish({"type": "productions"})
+        return target.snapshot()
+
+    @app.get("/api/productions/{production_id}/scenes")
+    def list_scenes(production_id: str):
+        production(production_id)
+        return {"scenes": [{"id": scene.id, "title": scene.doc["title"], "uses": scene.doc.get("uses"), "recipe": scene.doc.get("recipe"), "kind": scene.doc["brief"].get("kind"), "archived": scene.doc.get("archived"),
+                            "stage": scene.doc["stage"], "concept": scene.doc["brief"].get("text") or "", "shots": len(scene.doc["shots"]),
+                            "approved": sum(shot["status"] == "approved" for shot in scene.doc["shots"]),
+                            "duration_s": round(sum(item["duration_s"] for item in model.timeline(scene.doc)), 1),
+                            "poster": next((take["poster"] for shot in scene.doc["shots"] if (take := model.chosen_take(shot)) and take.get("poster")), None),
+                            "latest": next((item["path"] for item in reversed(scene.doc["deliverables"]) if item.get("path")), None)}
+                           for scene in movies.scenes_of(store, production_id)]}
+
+    @app.post("/api/productions/{production_id}/scenes")
+    def create_scene(production_id: str, request: SceneCreated):
+        production(production_id)
+        recipe = next((item for item in movies.recipes(store.root) if item["name"] == request.recipe), None) if request.recipe else None
+        return movies.create_scene(store, production_id, request.title, recipe, request.uses, request.concept, request.kind).snapshot()
+
+    @app.post("/api/productions/{production_id}/scene_order")
+    def order_scenes(production_id: str, request: SceneOrder):
+        production(production_id)
+        movies.reorder(store, production_id, request.order)
+        return {"order": request.order}
+
+    @app.post("/api/productions/{production_id}/uses")
+    def scene_uses(production_id: str, request: Uses):
+        production(production_id)
+        movies.set_uses(store, production_id, request.model_dump())
+        return production(production_id).snapshot()
+
+    @app.post("/api/productions/{production_id}/file_under")
+    def file_under(production_id: str, request: FiledUnder):
+        production(production_id)
+        movies.file_under(store, production_id, request.movie, request.archived)
+        return production(production_id).snapshot()
+
+    @app.post("/api/productions/{production_id}/assemble_movie")
+    async def assemble_movie(production_id: str):
+        production(production_id)
+        return await run_in_threadpool(movies.assemble_movie, store, production_id, showrunner.take_facts)
+
     @app.post("/api/productions/{production_id}/upload")
     async def upload(production_id: str, file: UploadFile = File(...), role: str = Form("bin"), target: str | None = Form(None)):
         production(production_id)
@@ -243,6 +364,11 @@ def create_app(showrunner, *, title: str = "Showrunner") -> FastAPI:
         production(production_id)
         return await run_in_threadpool(showrunner.shoot_rates, production_id)
 
+    @app.get("/api/productions/{production_id}/conversation")
+    def conversation(production_id: str, after: int = 0):
+        production(production_id)
+        return showrunner.director.conversation(production_id, after)
+
     @app.get("/api/productions/{production_id}/director")
     def director_status(production_id: str):
         production(production_id)
@@ -285,6 +411,16 @@ def create_app(showrunner, *, title: str = "Showrunner") -> FastAPI:
         production(production_id)
         return showrunner.choose_template(production_id, request.role, request.template or None)
 
+    @app.get("/api/productions/{production_id}/sizes")
+    async def frame_sizes(production_id: str):
+        production(production_id)
+        return await run_in_threadpool(showrunner.frame_sizes, production_id)
+
+    @app.get("/api/productions/{production_id}/loras")
+    async def cast_loras(production_id: str):
+        production(production_id)
+        return await run_in_threadpool(showrunner.cast_lora_choices, production_id)
+
     @app.post("/api/productions/{production_id}/text")
     async def add_text(production_id: str, request: Text):
         production(production_id)
@@ -301,6 +437,11 @@ def create_app(showrunner, *, title: str = "Showrunner") -> FastAPI:
         production(production_id)
         return await run_in_threadpool(showrunner.add_card, production_id, shot_id, request.text, request.subtitle, request.style,
                                        design=request.design or None, picture=request.picture or None)
+
+    @app.post("/api/productions/{production_id}/shots/{shot_id}/detach-sound")
+    async def detach_sound(production_id: str, shot_id: str):
+        production(production_id)
+        return await run_in_threadpool(showrunner.detach_sound, production_id, shot_id)
 
     @app.post("/api/productions/{production_id}/shots/{shot_id}/rerun")
     def rerun(production_id: str, shot_id: str):
