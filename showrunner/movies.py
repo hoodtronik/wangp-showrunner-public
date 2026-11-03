@@ -5,7 +5,7 @@ NOTE (hoodtronik fork, 2026-11-02, request: "use subtemplates/subprojects in a m
 projects"): a movie is a production with `is_movie`; its cast, its locations (Sets) and its style are the library. A scene is a production
 with `movie` = the movie's id and `uses` = the cast ids and location names it switches on ("Showrunner gets confused when I have all the
 characters and environments active when it may only need 2 characters and one environment"). The scene's document HOLDS COPIES of the
-active members and places (marked `shared`, their media as full paths into the movie's folder), so the director, render and the pages
+active members and places (marked `shared`, their media mirrored into the scene at media/movie/<movie path>), so the director, render and the pages
 read a scene exactly like any production and see only what the scene uses. Two flows keep them one library:
   - materialize: the movie (or the scene's `uses`) changed -> rewrite the scene's shared members/places/style from the movie;
   - push: the user or Deepy changed a shared member/place/style inside a scene -> write it to the movie, which materializes every scene.
@@ -18,6 +18,7 @@ import copy
 import json
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -97,16 +98,39 @@ def _map_place(place: dict[str, Any], convert) -> dict[str, Any]:
     return place
 
 
-def _absolute(production):
-    """Movie path -> the full path a scene stores."""
-    return lambda path: path if Path(path).is_absolute() else str(production.folder / path)
+MIRROR = "media/movie"  # a scene's copy of its movie's media, at the movie's own relative paths
+
+
+# NOTE (hoodtronik fork, 2026-11-02, request: scene 1 failed with "Path is not an existing file: @outputs/hoodtronik_v3_front-...png"):
+# a scene's Deepy only sees the scene's own media folder (@documents), so a full path into the movie's folder reached it as a bare file
+# name, read as @outputs/<name>. The scene now keeps a mirror of the movie media it uses, at fixed paths (copied again only when the movie's
+# file changed), so materialize stays idempotent and each scene folder holds everything it renders with.
+def _mirrored(movie, scene):
+    """Movie path -> the scene's path to its mirror copy (media/movie/<movie path>); a full path outside the movie stays as it is."""
+    def convert(path):
+        relative = path if not Path(path).is_absolute() else movie.rel(path)
+        if Path(relative).is_absolute():
+            return path
+        source, target = movie.folder / relative, scene.folder / MIRROR / relative
+        if source.is_file():
+            stat = source.stat()
+            if not target.is_file() or (target.stat().st_size, int(target.stat().st_mtime)) != (stat.st_size, int(stat.st_mtime)):
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
+        return f"{MIRROR}/{Path(relative).as_posix()}"
+    return convert
 
 
 def _into(movie, scene):
-    """Scene path -> the path the movie stores: its own files relative, a scene's file copied into the movie (media/imports)."""
+    """Scene path -> the path the movie stores: its own files relative (a mirror copy maps back to the movie's file), a scene's file copied
+    into the movie (media/imports)."""
     def convert(path):
-        full = path if Path(path).is_absolute() else str(scene.folder / path)
-        return movie.adopt(full) if Path(full).is_file() else movie.rel(full)
+        full = Path(path if Path(path).is_absolute() else scene.folder / path)
+        try:
+            return full.resolve().relative_to((scene.folder / MIRROR).resolve()).as_posix()
+        except ValueError:
+            pass
+        return movie.adopt(str(full)) if full.is_file() else movie.rel(str(full))
     return convert
 
 
@@ -158,7 +182,7 @@ def materialize(store, scene) -> bool:
         return False
     with movie.lock:
         library = copy.deepcopy(movie.doc)
-    convert = _absolute(movie)
+    convert = _mirrored(movie, scene)
     with scene.lock:
         doc = scene.doc
         uses = doc["uses"]
